@@ -15,17 +15,21 @@ Post here: https://github.com/ZenHubIO/support/issues/1070
 import csv
 import datetime
 import requests
+import time
 
 GITHUB_USER = ''
-GITHUB_PASSWORD = ''
-AUTH = (GITHUB_USER, GITHUB_PASSWORD)
+GITHUB_AUTH_TOKEN = '' 
+AUTH = (GITHUB_USER, GITHUB_AUTH_TOKEN)
 
 ZENHUB_AUTHENTICATION_TOKEN = ''
-ZENHUB_REPO_ID = ''
 ZENHUB_HEADERS = {
     'X-Authentication-Token': ZENHUB_AUTHENTICATION_TOKEN,
 }
+
 REPO = ''  # format is username/repo
+REPO_ID = requests.get(f"https://api.github.com/repos/{REPO}", auth=AUTH).json()['id']
+
+FILTER_LABEL = '' # only import issues with this label
 
 
 def iterate_pages(repository):
@@ -40,9 +44,10 @@ def iterate_pages(repository):
     issues = 'https://api.github.com/repos/{}/issues?state=all&page={}&per_page=100'.format(repository, page_number)
     request = requests.get(issues, auth=AUTH)
     results.append(request.json())
-
+    
+    #if request.headers.get('link'):
     # make requests until the 'last' url is reached and increase the page number by 1 for each request
-    while 'last' in request.headers['link'] and 'next' in request.headers['link']:
+    while 'last' in request.headers.get('link', []) and 'next' in request.headers.get('link', []):
         page_number += 1
         issues = 'https://api.github.com/repos/{}/issues?state=all&page={}&per_page=100'.format(repository, page_number)
         request = requests.get(issues, auth=AUTH)
@@ -53,7 +58,7 @@ def iterate_pages(repository):
     return results
 
 
-def get_comments_max_nr():
+def get_comments_max_nr(total_result):
     """
     Get maximum number of comments for one issue in order to write header columns when creating the CSV file
     :return: count of the max comments per issue
@@ -64,10 +69,11 @@ def get_comments_max_nr():
             if issue.get('pull_request') is None:
                 if issue['comments'] > 0:
                     comments_list.append(issue['comments'])
+    print(f"max comments = {max(comments_list)}")
     return max(comments_list)
 
 
-def get_labels_nr():
+def get_labels_nr(total_result):
     """
     Get number of labels for the repo. Used to write header columns when creating the CSV file
     Appends each unique label found to 'labels_list'
@@ -82,15 +88,21 @@ def get_labels_nr():
                         # Check if the label name is already appended to 'labels_list'
                         if label['name'] not in labels_list:
                             labels_list.append(label['name'])
+    print(f"labels number = {len(labels_list)}")
     return len(labels_list)
 
 
 def write_issues(results):
     for page in results:
-        for issue in page:
+        for count, issue in enumerate(page):
 
             # We're only importing active issues
             if issue.get('state') == 'closed':
+                continue
+            
+            # Only import issues tagged with a filter label
+            label_names = [label.get('name') for label in issue.get('labels', [])]
+            if FILTER_LABEL and FILTER_LABEL not in label_names:
                 continue
 
             issue_type = None
@@ -98,16 +110,21 @@ def write_issues(results):
             issue_milestone = None
             resolved_at = None
             assignee = None
+            description = ""
+            
             # filter only issues that are not pull requests
             if issue.get('pull_request') is None:
                 issue_number = issue['number']
 
                 # make request to zenhub with the issue number
                 zenhub_request = requests.get(
-                    'https://api.zenhub.io/p1/repositories/{}/issues/{}'.format(ZENHUB_REPO_ID, issue_number),
+                    'https://api.zenhub.com/p1/repositories/{}/issues/{}'.format(REPO_ID, issue_number),
                     headers=ZENHUB_HEADERS)
-
+                
+                # avoid hitting API limit of 100 req/s
+                time.sleep(1.5)
                 zenhub_json_object = zenhub_request.json()
+                print(f"{count} zenhub requests completed")
 
                 # As of 03.2020, JIRA does not create "Refactoring" and "Task" issues types, instead it makes them "Story" types.
                 # It is advised to leave the "Refactoring" label and do a data migration inside of JIRA to remove the label and convert the issue type
@@ -149,8 +166,9 @@ def write_issues(results):
                     date_resolved = datetime.datetime.strptime(issue['closed_at'], date_format_rest)
                     resolved_at = date_resolved.strftime(date_format_jira)
 
+                if issue['body']:
                 # Imported markdown doesn't look good in JIRA, remove the headers
-                description = issue['body'].replace('#', '').replace('##', '').replace('###', '').strip() + '\n\n'
+                    description = issue['body'].replace('#', '').replace('##', '').replace('###', '').strip() + '\n\n'
 
                 # Append comments to description. JIRA import breaks when trying to import comments
                 comments = []
@@ -171,7 +189,7 @@ def write_issues(results):
 
                 labels_list = labels_list + [None] * (labels_max_nr - len(labels_list))
 
-                if issue_status is 'Closed':
+                if issue_status == 'Closed':
                     issue_resolution = 'Done'
 
                 csvout.writerow([
@@ -181,11 +199,11 @@ def write_issues(results):
                     # issue_resolution,
                     # issue_milestone,
                     description,
-                    # assignee,
-                    # reporter,
-                    # created_at,
-                    # updated_at,
-                    # resolved_at,
+                    assignee,
+                    reporter,
+                    created_at,
+                    updated_at,
+                    resolved_at,
                     issue_estimation,
                     *labels_list,  # labels (multiple labels in multiple columns)
                 ])
@@ -194,8 +212,8 @@ def write_issues(results):
 if __name__ == '__main__':
     # Call and save the JSON object created by ´iterate_pages()´
     total_result = iterate_pages(REPO)
-    comments_max_nr = get_comments_max_nr()
-    labels_max_nr = get_labels_nr()
+    comments_max_nr = get_comments_max_nr(total_result)
+    labels_max_nr = get_labels_nr(total_result)
 
     # Create enough labels columns to hold max number of labels
     labels_header_list = ['Labels'] * labels_max_nr
@@ -210,13 +228,13 @@ if __name__ == '__main__':
         # 'Resolution',  # Need Zenhub API for this (done, won't do, duplicate, cannot reproduce) - for software projects
         # 'Fix Version(s)',  # milestone
         'Description',
-        # 'Assignee',
-        # 'Reporter',
-        # 'Created',
-        # 'Updated',
-        # 'Resolved',
+        'Assignee',
+        'Reporter',
+        'Created',
+        'Updated',
+        'Resolved',
         'Estimate',
         *labels_header_list,
     ))
-
+    print("preparation done, start writing issues")
     write_issues(total_result)
