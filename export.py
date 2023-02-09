@@ -94,6 +94,7 @@ def get_labels_nr(total_result):
 
 def write_issues(results):
     for count, page in enumerate(results):
+        print(f"start {count + 1}/{len(results)} batch")
         for issue in page:
 
             # We're only importing active issues
@@ -124,7 +125,6 @@ def write_issues(results):
                 # avoid hitting API limit of 100 req/s
                 time.sleep(1.5)
                 zenhub_json_object = zenhub_request.json()
-                print(f"{count}/{len(results)} batch completed")
 
                 # As of 03.2020, JIRA does not create "Refactoring" and "Task" issues types, instead it makes them "Story" types.
                 # It is advised to leave the "Refactoring" label and do a data migration inside of JIRA to remove the label and convert the issue type
