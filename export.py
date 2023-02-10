@@ -253,6 +253,8 @@ def write_issues(results, repo, issues_epics):
                 Created at: {created_at}
                 Updated at: {updated_at}
                 Last status: {issue_status}
+                Assignee: {assignee}
+                Reporter: {reporter}
                 {epics_list}                
                 """
 
