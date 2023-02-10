@@ -1,7 +1,6 @@
 """
 Originally from: https://gist.github.com/unbracketed/3380407
 Exports Issues from a specified repository to a CSV file
-Uses basic authentication (Github username + password) to retrieve Issues
 from a repository that username has access to. Supports Github API v3.
 
 JIRA issue fields:
@@ -13,26 +12,28 @@ https://confluence.atlassian.com/adminjiracloud/importing-data-from-csv-77663676
 Post here: https://github.com/ZenHubIO/support/issues/1070
 
         
-        Jira fields         -  Current fields 
-        
-        Flag                - 
-        Issue color         - 
-        Start date          - 
-        Issue Summary       - Summary
-        Issue Type          - Type
-        Issue Description   - Description + Comments + Created_at + Updated_at 
-                                    + GitHub issue link + PR link + Status + Epic IDs
-        Labels              - Labels
-        Due Date            - Resolved
-        Assignee            - Assignee - (needs to be an existing user else it fails)
-        Parent ID           - would be epic can't do as there is no existing issue link
-        
+Jira fields         -  Current fields 
+
+Flag                - 
+Issue color         - 
+Start date          - 
+Issue Summary       - Summary
+Issue Type          - Type
+Issue Description   - Description + Comments + Created_at + Updated_at 
+                            + GitHub issue link + Status + Epics
+Labels              - Labels
+Due Date            - Resolved
+Assignee            - Assignee - (needs to be an existing user else it fails)
+Parent ID           - would be epic can't do as there is no existing issue link
+
         
 """
 import csv
 import datetime
 import requests
 import time
+import json
+from pathlib import Path
 
 GITHUB_USER = ''
 GITHUB_AUTH_TOKEN = '' 
@@ -42,15 +43,13 @@ ZENHUB_AUTH_TOKEN = ''
 ZENHUB_HEADERS = { 'X-Authentication-Token': ZENHUB_AUTH_TOKEN }
 
 # format is username/repo
-REPOS = [
-         ]  
+REPOS = []  
 
 # if specified, only import issues with this label
 FILTER_LABEL = '' 
 
 # "github_user": "jira_email"
-ASSIGNEE_GITHUB_JIRA_MAPPING = {
-}
+ASSIGNEE_GITHUB_JIRA_MAPPING = {}
    
    
 def get_github_repo_id(repo):
@@ -128,14 +127,21 @@ def get_epics(repos):
             f'https://api.zenhub.com/p1/repositories/{repo_id}/epics', headers=ZENHUB_HEADERS)
         repo_epics = zenhub_request.json().get('epic_issues', [])    
         
-        print(f"Getting all issues and epics for {repo}: this might take a while")
+        print(f"Getting all issues for {len(repo_epics)} epics in {repo}: this might take a couple of minutes")
         for repo_epic in repo_epics:
             zenhub_request = requests.get(
                 f"https://api.zenhub.com/p1/repositories/{repo_id}/epics/{repo_epic['issue_number']}", headers=ZENHUB_HEADERS)
+            
+            # This is to stay within API rate limits
             time.sleep(1.5)
-            for k in zenhub_request.json()['issues']:
-                if k.get('issue_url'):
-                    issues_epics.setdefault(k['issue_url'],[]).append(repo_epic['issue_url'])
+            issues = zenhub_request.json()['issues']
+            
+            # Get all epics per issue 
+            for issue in issues:
+                if issue.get('issue_number'):
+                    key = f"{issue['issue_number']}-{issue['repo_id']}"
+                    issues_epics.setdefault(key,[]).append(repo_epic['issue_url'])
+
     return issues_epics
 
 
@@ -204,9 +210,10 @@ def write_issues(results, repo, issues_epics):
                 if issue.get('milestone') is not None:
                     issue_milestone = issue['milestone']['title']
                 
-                
-                epics = issues_epics.get(issue['html_url'], [])
-                
+                key = f"{issue['number']}-{repo_id}"
+                epics = issues_epics.get(key, [])
+                epics_list = '\n'.join([f'Epic: {i}' for i in epics])
+                                
                 # Transform dates to a format that can be parsed by Jira
                 # Java Format (used by Jira) "dd/MMM/yy h:mm a" == "14/Nov/18 10:39 AM"
                 # Python = "%d/%b/%y %l:%M %p"
@@ -221,10 +228,6 @@ def write_issues(results, repo, issues_epics):
                 if issue.get('closed_at'):
                     date_resolved = datetime.datetime.strptime(issue['closed_at'], date_format_rest)
                     resolved_at = date_resolved.strftime(date_format_jira)
-
-                # Get pull request
-                if issue.get('pull_request'):
-                    pull_request = issue['pull_request']['url']
                     
                 if issue['body']:
                 # Imported markdown doesn't look good in JIRA, remove the headers
@@ -240,17 +243,16 @@ def write_issues(results, repo, issues_epics):
                 comments = comments + [''] * (comments_max_nr - len(comments))
                 description += '\n'.join(comments)
                 
-                epics_list = '\nEpic: '.join(epics)
+
                 # Add other info to description
                 description += f"""
                 
-                Moved from ZenHub
-                
+                Migrated from ZenHub. Details:
+        
                 Original ticket: {issue['html_url']}
                 Created at: {created_at}
                 Updated at: {updated_at}
                 Last status: {issue_status}
-                Pull request: {pull_request}
                 {epics_list}                
                 """
 
@@ -285,8 +287,21 @@ def write_issues(results, repo, issues_epics):
 
 if __name__ == '__main__':
     
-    epic_issues = get_epics(REPOS)
-        
+    # Load epics
+    path = Path('./epics.json')
+    if path.is_file():
+        with open('epics.json', 'r') as openfile:
+            issues_epics = json.load(openfile)
+        print("epics loaded from file")
+    else:
+        issues_epics = get_epics(REPOS)
+        try:
+            json_object = json.dumps(issues_epics, indent=4)
+            with open("epics.json", "w") as outfile:
+                outfile.write(json_object)
+        except:
+            print("could not save json")
+            
     # Call and save the JSON object created by ´iterate_pages()´
     for repo in REPOS:
         print(f"start processing {repo}")
@@ -317,5 +332,5 @@ if __name__ == '__main__':
         ))
         
         print("preparation done, start writing issues")
-        write_issues(total_result, repo, epic_issues)
+        write_issues(total_result, repo, issues_epics)
         print(f"repo {repo} done")
