@@ -147,7 +147,10 @@ def get_epics(repos):
 
 def write_issues(results, repo, issues_epics):
     repo_id = get_github_repo_id(repo)
-           
+    # Jira only allows batches of 250 issues to be imported
+    batch_num = 0 
+    batch_count = 0
+    
     for count, page in enumerate(results):
         print(f"start {count + 1}/{len(results)} batch")
         for issue in page:
@@ -270,6 +273,30 @@ def write_issues(results, repo, issues_epics):
                 if issue_status == 'Closed':
                     issue_resolution = 'Done'
 
+                if batch_count==250:
+                    batch_count = 0
+                    batch_num += 1
+
+                csvfile = f"{repo.replace('/', '-')}-issues-{batch_num}.csv"
+                if batch_count == 0:
+                    csvout = csv.writer(open(csvfile, 'w', newline=''))
+                    # Write CSV Header
+                    csvout.writerow((
+                        'Summary',
+                        'Type',  # Need Zenhub API for this (task, epic, bug)
+                        'Status',  # Need Zenhub API for this (in which pipeline is located)
+                        # 'Resolution',  # Need Zenhub API for this (done, won't do, duplicate, cannot reproduce) - for software projects
+                        # 'Fix Version(s)',  # milestone
+                        'Description',
+                        'Assignee',
+                        'Reporter',
+                        'Created',
+                        'Updated',
+                        'Resolved',
+                        'Estimate',
+                        *labels_header_list,
+                    ))   
+
                 csvout.writerow([
                     issue['title'].strip(),
                     issue_type,
@@ -285,6 +312,9 @@ def write_issues(results, repo, issues_epics):
                     issue_estimation, # not in Jira
                     *labels_list,  # labels (multiple labels in multiple columns)
                 ])
+                
+                batch_count += 1
+                
 
 
 if __name__ == '__main__':
@@ -313,25 +343,7 @@ if __name__ == '__main__':
 
         # Create enough labels columns to hold max number of labels
         labels_header_list = ['Labels'] * labels_max_nr
-        csvfile = '%s-issues.csv' % (repo.replace('/', '-'))
-        csvout = csv.writer(open(csvfile, 'w', newline=''))
 
-        # Write CSV Header
-        csvout.writerow((
-            'Summary',
-            'Type',  # Need Zenhub API for this (task, epic, bug)
-            'Status',  # Need Zenhub API for this (in which pipeline is located)
-            # 'Resolution',  # Need Zenhub API for this (done, won't do, duplicate, cannot reproduce) - for software projects
-            # 'Fix Version(s)',  # milestone
-            'Description',
-            'Assignee',
-            'Reporter',
-            'Created',
-            'Updated',
-            'Resolved',
-            'Estimate',
-            *labels_header_list,
-        ))
         
         print("preparation done, start writing issues")
         write_issues(total_result, repo, issues_epics)
